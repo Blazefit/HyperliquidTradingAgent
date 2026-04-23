@@ -36,8 +36,6 @@ logging.basicConfig(
 log = logging.getLogger("manual-setup")
 
 SZ_DECIMALS = {"BTC": 5, "ETH": 4, "SOL": 2, "HYPE": 1}
-_ws_log = logging.getLogger("hyperliquid")
-_ws_log.setLevel(logging.CRITICAL)
 
 
 @dataclass
@@ -80,7 +78,7 @@ class ManualExecutor:
             sys.exit(1)
 
         self.wallet = wallet
-        self.info = Info(constants.MAINNET_API_URL)
+        self.info = Info(constants.MAINNET_API_URL, skip_ws=True)
         account = Account.from_key(private_key)
         self.exchange = Exchange(account, constants.MAINNET_API_URL, account_address=wallet)
         self.filled_targets: set[int] = set()
