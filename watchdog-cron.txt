@@ -1,0 +1,1 @@
+*/2 * * * * pgrep -f "manual_setup" > /dev/null || (cd /home/daneelbrain/HyperliquidTradingAgent && nohup ./run-watcher.sh &)
