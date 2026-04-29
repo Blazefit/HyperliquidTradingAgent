@@ -100,7 +100,15 @@ class ManualExecutor:
         return None
 
     def get_open_orders(self, asset: str) -> list[dict]:
-        return [o for o in self.info.open_orders(self.wallet) if o.get("coin") == asset]
+        for attempt in range(3):
+            try:
+                return [o for o in self.info.open_orders(self.wallet) if o.get("coin") == asset]
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1 * (attempt + 1))
+                else:
+                    log.warning("get_open_orders failed after 3 attempts: %s", e)
+                    return []
 
     def cancel_order(self, asset: str, oid) -> bool:
         try:
@@ -207,22 +215,29 @@ class ManualExecutor:
             self.cancel_order(setup.asset, self.sl_order_oid)
             time.sleep(0.3)
 
-        is_buy = setup.direction == "short"
+        is_short = setup.direction == "short"
         sz = round(remaining_size, SZ_DECIMALS.get(setup.asset, 4))
-        order_type = {
-            "trigger": {
-                "triggerPx": str(new_price),
-                "isMarket": True,
-                "tpsl": "sl",
+        order_requests = [
+            {
+                "coin": setup.asset,
+                "is_buy": is_short,
+                "sz": sz,
+                "limit_px": float(new_price),
+                "order_type": {
+                    "trigger": {
+                        "triggerPx": float(new_price),
+                        "isMarket": True,
+                        "tpsl": "sl",
+                    }
+                },
+                "reduce_only": True,
             }
-        }
+        ]
         log.info(
             "Moving SL to $%.2f for remaining %.5f %s",
             new_price, sz, setup.asset,
         )
-        result = self.exchange.order(
-            setup.asset, is_buy, sz, new_price, order_type, reduce_only=True,
-        )
+        result = self.exchange.bulk_orders(order_requests)
         log.info("New SL result: %s", result)
         if result and result.get("status") == "ok":
             statuses = result.get("response", {}).get("data", {}).get("statuses", [])
@@ -398,19 +413,54 @@ class ManualExecutor:
             self.filled_targets = set()
             self.sl_order_oid = resting_sl
         else:
-            log.info("Placing bracket orders...")
+            log.info("Placing bracket orders via bulk_orders...")
             self.cancel_all_orders(setup.asset)
             time.sleep(0.3)
 
-            self.sl_order_oid = self.place_stop_loss(setup, size)
-            time.sleep(0.3)
+            is_short = setup.direction == "short"
+            order_requests = [
+                {
+                    "coin": setup.asset,
+                    "is_buy": is_short,
+                    "sz": round(size, SZ_DECIMALS.get(setup.asset, 4)),
+                    "limit_px": float(setup.stop_loss),
+                    "order_type": {
+                        "trigger": {
+                            "triggerPx": float(setup.stop_loss),
+                            "isMarket": True,
+                            "tpsl": "sl",
+                        }
+                    },
+                    "reduce_only": True,
+                }
+            ]
 
-            for i, tp in enumerate(setup.targets):
+            for tp in setup.targets:
                 tp_size = round(size * (tp.pct / 100), SZ_DECIMALS.get(setup.asset, 4))
-                tp_oid = self.place_tp_limit(setup, tp.price, tp_size, f"TP{i+1}")
-                if tp_oid:
-                    tp._oid = tp_oid
-                time.sleep(0.2)
+                order_requests.append({
+                    "coin": setup.asset,
+                    "is_buy": is_short,
+                    "sz": tp_size,
+                    "limit_px": float(tp.price),
+                    "order_type": {"limit": {"tif": "Gtc"}},
+                    "reduce_only": True,
+                })
+
+            result = self.exchange.bulk_orders(order_requests)
+            log.info("bulk_orders result: %s", result)
+
+            if result and result.get("status") == "ok":
+                statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+                if statuses and "resting" in statuses[0]:
+                    self.sl_order_oid = str(statuses[0]["resting"]["oid"])
+                    log.info("SL order resting: %s", self.sl_order_oid)
+                for i, tp in enumerate(setup.targets):
+                    if i + 1 < len(statuses) and "resting" in statuses[i + 1]:
+                        tp._oid = str(statuses[i + 1]["resting"]["oid"])
+                        log.info("TP%d resting: %s", i + 1, tp._oid)
+            else:
+                log.error("bulk_orders failed: %s", result)
+                return
 
         print("\n  Bracket active. Watching fills... (Ctrl+C to exit watcher)\n")
         self._watch_loop(setup, size, remaining_pct)
@@ -589,24 +639,31 @@ class ManualExecutor:
         return trail_sl_applied
 
     def place_stop_loss_with_size(self, setup: Setup, size: float) -> Optional[str]:
-        is_buy = setup.direction == "short"
+        is_short = setup.direction == "short"
         current_sl = setup.stop_loss
         if hasattr(self, '_active_trail_sl') and self._active_trail_sl:
             current_sl = self._active_trail_sl
-        order_type = {
-            "trigger": {
-                "triggerPx": str(current_sl),
-                "isMarket": True,
-                "tpsl": "sl",
-            }
-        }
         sz = round(size, SZ_DECIMALS.get(setup.asset, 4))
         if sz <= 0:
             return None
+        order_requests = [
+            {
+                "coin": setup.asset,
+                "is_buy": is_short,
+                "sz": sz,
+                "limit_px": float(current_sl),
+                "order_type": {
+                    "trigger": {
+                        "triggerPx": float(current_sl),
+                        "isMarket": True,
+                        "tpsl": "sl",
+                    }
+                },
+                "reduce_only": True,
+            }
+        ]
         log.info("Replacing SL for remaining %.5f @ $%.2f", sz, current_sl)
-        result = self.exchange.order(
-            setup.asset, is_buy, sz, current_sl, order_type, reduce_only=True,
-        )
+        result = self.exchange.bulk_orders(order_requests)
         if result and result.get("status") == "ok":
             statuses = result.get("response", {}).get("data", {}).get("statuses", [])
             if statuses and "resting" in statuses[0]:
