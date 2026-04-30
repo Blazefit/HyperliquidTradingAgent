@@ -1,6 +1,6 @@
 $scriptPath = "C:\Users\jason\HyperliquidTradingAgent\manual_setup.py"
 $logPath = "C:\Users\jason\HyperliquidTradingAgent\watcher.log"
-$pythonExe = "python"
+$pythonExe = "C:\Users\Jason\AppData\Local\Programs\Python\Python39\python.exe"
 
 $watcherArgs = "--asset BTC --direction long --entry 75507 --sl 73997 --tp1 76615,25 --tp2 78384,35 --tp3 79644,20 --trail-sl 78384 --trail-after 2"
 
